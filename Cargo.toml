@@ -11,3 +11,7 @@ parking_lot = { version = "0.12", optional = true }
 
 [dev-dependencies]
 pin-project = "1.1"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
