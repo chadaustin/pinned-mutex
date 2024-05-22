@@ -2,6 +2,9 @@ use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::sync::{Mutex, MutexGuard};
 
+/// Provides [structural
+/// pinning](https://doc.rust-lang.org/std/pin/index.html#projections-and-structural-pinning)
+/// atop [Mutex].
 pub struct PinnedMutex<T> {
     inner: Mutex<T>,
 }
@@ -13,6 +16,10 @@ impl<T> PinnedMutex<T> {
         }
     }
 
+    /// Acquires the lock and returns a guard.
+    ///
+    /// Poisoning is not supported. If the underlying mutex is
+    /// poisoned, `lock` will panic.
     pub fn lock(self: Pin<&Self>) -> PinnedMutexGuard<'_, T> {
         let guard = self
             .get_ref()
@@ -23,16 +30,25 @@ impl<T> PinnedMutex<T> {
     }
 }
 
+/// Provides access to mutex's contents. [Deref] to `&T` is always
+/// possible. [DerefMut] to `&mut T` is only possive if T is `Unpin`.
+///
+/// `as_ref` and `as_mut` project structural pinning.
 pub struct PinnedMutexGuard<'a, T: 'a> {
     guard: MutexGuard<'a, T>,
 }
 
 impl<'a, T> PinnedMutexGuard<'a, T> {
-    pub fn as_ref(&mut self) -> Pin<&T> {
+    /// Provides pinned access to the underlying T.
+    pub fn as_ref(&self) -> Pin<&T> {
+        // PinnedMutex::lock requires the mutex is pinned.
         unsafe { Pin::new_unchecked(&self.guard) }
     }
 
+    /// Provides pinned mutable access to the underlying T.
     pub fn as_mut(&mut self) -> Pin<&mut T> {
+        // PinnedMutex::lock requires the mutex is pinned.
+        // &mut self guarantees as_ref() cannot alias.
         unsafe { Pin::new_unchecked(&mut self.guard) }
     }
 }
@@ -46,11 +62,10 @@ impl<'a, T> Deref for PinnedMutexGuard<'a, T> {
 
 impl<'a, T: Unpin> DerefMut for PinnedMutexGuard<'a, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: T is Unpin, so it's safe to move out of T.
         &mut self.guard
     }
 }
-
-// TODO: impl Drop
 
 #[cfg(test)]
 mod tests {
@@ -98,5 +113,14 @@ mod tests {
         assert_eq!(0, locked.as_mut().inc());
         assert_eq!(1, locked.as_mut().inc());
         assert_eq!(2, locked.as_ref().get());
+    }
+
+    #[test]
+    fn ref_alias() {
+        let pm = pin!(PinnedMutex::new(MustPin::new()));
+        let locked = pm.as_ref().lock();
+        let a = locked.as_ref();
+        let b = locked.as_ref();
+        assert_eq!(a.value, b.value);
     }
 }
