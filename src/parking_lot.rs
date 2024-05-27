@@ -1,4 +1,4 @@
-use parking_lot::{Mutex, MutexGuard};
+use parking_lot::{Condvar, Mutex, MutexGuard};
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 
@@ -61,6 +61,45 @@ impl<'a, T: Unpin> DerefMut for PinnedMutexGuard<'a, T> {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct PinnedCondvar(Condvar);
+
+impl PinnedCondvar {
+    pub fn new() -> PinnedCondvar {
+        Default::default()
+    }
+
+    pub fn wait<'a, T>(&self, guard: PinnedMutexGuard<'a, T>) -> PinnedMutexGuard<'a, T> {
+        let mut inner = guard.guard;
+        self.0.wait(&mut inner);
+        PinnedMutexGuard { guard: inner }
+    }
+
+    pub fn wait_while<'a, T, F>(
+        &self,
+        guard: PinnedMutexGuard<'a, T>,
+        mut condition: F,
+    ) -> PinnedMutexGuard<'a, T>
+    where
+        F: FnMut(Pin<&mut T>) -> bool,
+    {
+        let mut inner = guard.guard;
+        self.0.wait_while(&mut inner, move |v| {
+            // SAFETY: v is never moved.
+            condition(unsafe { Pin::new_unchecked(v) })
+        });
+        PinnedMutexGuard { guard: inner }
+    }
+
+    pub fn notify_one(&self) {
+        self.0.notify_one();
+    }
+
+    pub fn notify_all(&self) {
+        self.0.notify_all();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,5 +155,21 @@ mod tests {
         let a = locked.as_ref();
         let b = locked.as_ref();
         assert_eq!(a.value, b.value);
+    }
+
+    #[test]
+    fn cond_var() {
+        let cv = PinnedCondvar::new();
+        let pm = pin!(PinnedMutex::new(MustPin::new()));
+        let mut locked = pm.as_ref().lock();
+        locked.as_mut().inc();
+        let locked = cv.wait_while(locked, |pinned_contents| {
+            pinned_contents.as_ref().get() == 0
+        });
+        cv.wait_while(locked, |pinned_contents| {
+            pinned_contents.as_ref().get() == 0
+        });
+        cv.notify_one();
+        cv.notify_all();
     }
 }
