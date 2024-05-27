@@ -1,10 +1,11 @@
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Condvar, Mutex, MutexGuard};
 
 /// Provides [structural
 /// pinning](https://doc.rust-lang.org/std/pin/index.html#projections-and-structural-pinning)
 /// atop [Mutex].
+#[derive(Debug)]
 pub struct PinnedMutex<T> {
     inner: Mutex<T>,
 }
@@ -34,6 +35,7 @@ impl<T> PinnedMutex<T> {
 /// possible. [DerefMut] to `&mut T` is only possive if T is `Unpin`.
 ///
 /// `as_ref` and `as_mut` project structural pinning.
+#[derive(Debug)]
 pub struct PinnedMutexGuard<'a, T: 'a> {
     guard: MutexGuard<'a, T>,
 }
@@ -64,6 +66,51 @@ impl<'a, T: Unpin> DerefMut for PinnedMutexGuard<'a, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         // SAFETY: T is Unpin, so it's safe to move out of T.
         &mut self.guard
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct PinnedCondvar(Condvar);
+
+impl PinnedCondvar {
+    pub fn new() -> PinnedCondvar {
+        Default::default()
+    }
+
+    pub fn wait<'a, T>(&self, guard: PinnedMutexGuard<'a, T>) -> PinnedMutexGuard<'a, T> {
+        PinnedMutexGuard {
+            guard: self
+                .0
+                .wait(guard.guard)
+                .expect("PinnedMutex does not expose poison"),
+        }
+    }
+
+    pub fn wait_while<'a, T, F>(
+        &self,
+        guard: PinnedMutexGuard<'a, T>,
+        mut condition: F,
+    ) -> PinnedMutexGuard<'a, T>
+    where
+        F: FnMut(Pin<&mut T>) -> bool,
+    {
+        PinnedMutexGuard {
+            guard: self
+                .0
+                .wait_while(guard.guard, move |v| {
+                    // SAFETY: v is never moved.
+                    condition(unsafe { Pin::new_unchecked(v) })
+                })
+                .expect("PinnedMutex does not expose poison"),
+        }
+    }
+
+    pub fn notify_one(&self) {
+        self.0.notify_one()
+    }
+
+    pub fn notify_all(&self) {
+        self.0.notify_all()
     }
 }
 
@@ -122,5 +169,21 @@ mod tests {
         let a = locked.as_ref();
         let b = locked.as_ref();
         assert_eq!(a.value, b.value);
+    }
+
+    #[test]
+    fn cond_var() {
+        let cv = PinnedCondvar::new();
+        let pm = pin!(PinnedMutex::new(MustPin::new()));
+        let mut locked = pm.as_ref().lock();
+        locked.as_mut().inc();
+        let locked = cv.wait_while(locked, |pinned_contents| {
+            pinned_contents.as_ref().get() == 0
+        });
+        cv.wait_while(locked, |pinned_contents| {
+            pinned_contents.as_ref().get() == 0
+        });
+        cv.notify_one();
+        cv.notify_all();
     }
 }
