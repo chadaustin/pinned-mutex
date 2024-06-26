@@ -5,7 +5,7 @@ use std::sync::{Condvar, Mutex, MutexGuard};
 /// Provides [structural
 /// pinning](https://doc.rust-lang.org/std/pin/index.html#projections-and-structural-pinning)
 /// atop [Mutex].
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct PinnedMutex<T> {
     inner: Mutex<T>,
 }
@@ -185,5 +185,14 @@ mod tests {
         });
         cv.notify_one();
         cv.notify_all();
+    }
+
+    #[derive(Debug, Default)]
+    struct DebugTest;
+
+    #[test]
+    fn default_and_debug() {
+        let pm: PinnedMutex<DebugTest> = Default::default();
+        _ = format!("{:?}", pm);
     }
 }
